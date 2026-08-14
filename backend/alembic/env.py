@@ -1,12 +1,19 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
 from backend.app.db.session import Base
+
 from backend.app.models.company import Company
 from backend.app.models.raw_document import RawDocument
 from backend.app.models.event import MarketEvent
+from backend.app.models.price_bar import PriceBar
+from backend.app.models.source_run import SourceRun
+from backend.app.models.training_example import TrainingExample
+from backend.app.models.model_run import ModelRun
+from backend.app.models.prediction import Prediction
+
 
 config = context.config
 
@@ -43,6 +50,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            compare_type=True,
         )
 
         with context.begin_transaction():

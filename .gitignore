@@ -10,19 +10,14 @@ data/raw/
 data/processed/
 *.db
 *.sqlite
-
 # OS
 .DS_Store
-
 # IDE
 .vscode/
 .idea/
-
 # Node
 node_modules/
 dist/
 build/
-
 # Logs
 *.log
-.env

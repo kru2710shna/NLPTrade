@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     assemblyai_api_key: str | None = None
     assemblyai_base_url: str = "https://api.assemblyai.com/v2"
 
+    # AI ecosystem / model hub
+    huggingface_api_key: str | None = None
+    huggingface_base_url: str = "https://huggingface.co/api"
+
     # Social
     reddit_client_id: str | None = None
     reddit_client_secret: str | None = None

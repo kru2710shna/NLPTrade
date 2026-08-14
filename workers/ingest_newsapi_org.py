@@ -26,18 +26,6 @@ def parse_datetime(value: str | None) -> datetime | None:
         return None
 
 
-def normalize_source_name(article: dict[str, Any]) -> str:
-    source = article.get("source")
-
-    if isinstance(source, str):
-        return source
-
-    if isinstance(source, dict):
-        return source.get("name") or source.get("domain") or "TheNewsAPI"
-
-    return article.get("source_name") or "TheNewsAPI"
-
-
 def document_exists(db, source_type: str, url: str | None, title: str | None) -> bool:
     query = db.query(RawDocument).filter(RawDocument.source_type == source_type)
 
@@ -56,55 +44,58 @@ def build_raw_text(
     ticker: str | None,
     company: str | None,
 ) -> str:
+    source = article.get("source") or {}
+
     parts = [
         "SOURCE_CONTEXT",
         f"query={query}",
         f"ticker={ticker or ''}",
         f"company={company or ''}",
         "",
-        "ARTICLE",
+        "NEWSAPI_ORG_ARTICLE",
         f"title={article.get('title') or ''}",
+        f"source={source.get('name') if isinstance(source, dict) else ''}",
+        f"author={article.get('author') or ''}",
         f"description={article.get('description') or ''}",
-        f"snippet={article.get('snippet') or ''}",
-        f"keywords={article.get('keywords') or ''}",
-        f"categories={article.get('categories') or ''}",
-        f"entities={article.get('entities') or ''}",
+        f"content={article.get('content') or ''}",
         f"url={article.get('url') or ''}",
-        f"published_at={article.get('published_at') or ''}",
+        f"published_at={article.get('publishedAt') or ''}",
     ]
 
     return "\n".join(parts).strip()
 
 
-def fetch_thenewsapi_articles(
+def fetch_newsapi_articles(
     query: str,
     limit: int,
     language: str,
-    published_after: str | None,
-    sort: str,
+    from_date: str | None,
+    sort_by: str,
 ) -> list[dict[str, Any]]:
-    if not settings.thenewsapi_key:
-        raise RuntimeError("Missing THENEWSAPI_KEY in .env")
+    if not settings.newsapi_org_key:
+        raise RuntimeError("Missing NEWSAPI_ORG_KEY in .env")
 
-    url = f"{settings.thenewsapi_base_url}/all"
+    url = f"{settings.newsapi_org_base_url}/everything"
+
+    page_size = min(limit, 100)
 
     params: dict[str, Any] = {
-        "api_token": settings.thenewsapi_key,
-        "search": query,
+        "q": query,
+        "apiKey": settings.newsapi_org_key,
         "language": language,
-        "limit": limit,
-        "sort": sort,
+        "pageSize": page_size,
+        "sortBy": sort_by,
     }
 
-    if published_after:
-        params["published_after"] = published_after
+    if from_date:
+        params["from"] = from_date
 
     with httpx.Client(timeout=30.0) as client:
         response = client.get(url, params=params)
         response.raise_for_status()
         payload = response.json()
 
-    return payload.get("data", [])
+    return payload.get("articles", [])
 
 
 def ingest_articles(
@@ -122,35 +113,37 @@ def ingest_articles(
         for article in articles:
             title = article.get("title")
             url = article.get("url")
-            source_name = normalize_source_name(article)
-            published_at = parse_datetime(article.get("published_at"))
+            source = article.get("source") or {}
 
-            source_type = "thenewsapi_news"
+            if isinstance(source, dict):
+                source_name = source.get("name") or "NewsAPI.org"
+            else:
+                source_name = "NewsAPI.org"
+
+            source_type = "newsapi_org"
 
             if document_exists(db, source_type=source_type, url=url, title=title):
                 skipped += 1
                 continue
 
-            raw_text = build_raw_text(
-                article=article,
-                query=query,
-                ticker=ticker,
-                company=company,
-            )
-
             doc = RawDocument(
                 source_type=source_type,
                 source_name=source_name,
-                external_id=str(article.get("uuid") or article.get("id") or url or title or ""),
+                external_id=str(url or title or ""),
                 query=query,
                 ticker_context=ticker,
                 company_context=company,
                 url=url,
                 title=title,
-                raw_text=raw_text,
+                raw_text=build_raw_text(
+                    article=article,
+                    query=query,
+                    ticker=ticker,
+                    company=company,
+                ),
                 raw_payload_json=article,
                 processing_status="new",
-                published_at=published_at,
+                published_at=parse_datetime(article.get("publishedAt")),
             )
 
             db.add(doc)
@@ -161,35 +154,33 @@ def ingest_articles(
     finally:
         db.close()
 
-    print(f"TheNewsAPI ingestion complete. Inserted={inserted}, Skipped duplicates={skipped}")
+    print(f"NewsAPI.org ingestion complete. Inserted={inserted}, Skipped duplicates={skipped}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generic TheNewsAPI ingestion worker.")
-
-    parser.add_argument("--query", required=True, help='Search query, e.g. "NVIDIA | NVDA"')
-    parser.add_argument("--ticker", default=None, help="Optional ticker context, e.g. NVDA")
-    parser.add_argument("--company", default=None, help="Optional company context")
-    parser.add_argument("--limit", type=int, default=25, help="Number of articles to fetch")
-    parser.add_argument("--language", default="en", help="Article language")
-    parser.add_argument("--published-after", default=None, help="Optional date filter, e.g. 2025-08-01")
+    parser = argparse.ArgumentParser(description="Generic NewsAPI.org ingestion worker.")
+    parser.add_argument("--query", required=True, help='Search query, e.g. "NVIDIA OR NVDA"')
+    parser.add_argument("--ticker", default=None)
+    parser.add_argument("--company", default=None)
+    parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument("--language", default="en")
+    parser.add_argument("--from-date", default=None, help="Optional date, e.g. 2026-01-01")
     parser.add_argument(
-        "--sort",
-        default="published_on",
-        choices=["published_on", "relevance_score"],
-        help="Sort order for TheNewsAPI search results",
+        "--sort-by",
+        default="publishedAt",
+        choices=["relevancy", "popularity", "publishedAt"],
     )
 
     args = parser.parse_args()
 
-    print(f"Fetching TheNewsAPI articles for query={args.query!r} limit={args.limit}")
+    print(f"Fetching NewsAPI.org articles for query={args.query!r} limit={args.limit}")
 
-    articles = fetch_thenewsapi_articles(
+    articles = fetch_newsapi_articles(
         query=args.query,
         limit=args.limit,
         language=args.language,
-        published_after=args.published_after,
-        sort=args.sort,
+        from_date=args.from_date,
+        sort_by=args.sort_by,
     )
 
     print(f"Fetched {len(articles)} articles.")
